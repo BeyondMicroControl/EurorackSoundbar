@@ -63,4 +63,4 @@ This is our first step, planning how this soundbar will fit best fit behind your
 
 # Tools
 
-<a href=https://beyondmicrocontrol.github.io/EurorackSoundbar/index.html>TOOLS</a>
+<a href=https://beyondmicrocontrol.github.io/EurorackSoundbar/tools/TOOLS_CATALOG.html>TOOLS</a>
