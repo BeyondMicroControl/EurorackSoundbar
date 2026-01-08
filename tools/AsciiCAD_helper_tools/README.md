@@ -9,8 +9,9 @@ python3 generate_data.py
 ## Create BMP image for any given UTF8 character
 <pre>
  python3 char_to_bmp.py "Ȝ"
-
-Example output
+</pre>
+__Example output__
+<pre>
  >> Success! Using: /Users/owner/Library/Fonts/NotoSansMono-Regular.ttf
  >> File saved: char_64x64_0x021C.bmp
 </pre>
@@ -18,7 +19,9 @@ Example output
 ## Score any BMP image against UTF8 training dataset
 <pre>
 python3 score_glyph.py  char_64x64_0x021C.bmp --stageA-topk 5000 --stageB-radius 2 --workers 8
-
+</pre>
+__Example output__
+<pre>
 
 tageA-topk 5000 --stageB-radius 2 --workers 8
 Rank  Char   Hex Code   Match % (IoU)   v0.5
@@ -88,7 +91,5 @@ StageA: 16x16, topk=5000   StageB: radius=2, dilate=False, workers=8
 62    ǀ      U+01C0       25.27%
 63    ⁝      U+205D       25.15%
 64    ꜣ      U+A723       25.14%
-
-
 </pre>
 
