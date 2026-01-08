@@ -9,10 +9,14 @@ python3 generate_data.py
 ## Create BMP image for any given UTF8 character
 <pre>
  python3 char_to_bmp.py "Ȝ"
+
+Example output
+ >> Success! Using: /Users/owner/Library/Fonts/NotoSansMono-Regular.ttf
+ >> File saved: char_64x64_0x021C.bmp
 </pre>
 
 ## Score any BMP image against UTF8 training dataset
 <pre>
-python3 score_glyph.py  char_64x64_0x021C.bmp --stageA-topk 5000 --stageB-radius 0 --workers 8
+python3 score_glyph.py  char_64x64_0x021C.bmp --stageA-topk 5000 --stageB-radius 2 --workers 8
 </pre>
 
