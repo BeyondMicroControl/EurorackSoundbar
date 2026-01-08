@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SSD1306 Bitmap Converter</title>
+  <style>
+    :root { --gap: 12px; --pad: 14px; --radius: 14px; }
+    * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    body { margin: 0; padding: var(--pad); background: #111; color: #eee; }
+    h1 { font-size: 20px; margin: 0 0 var(--gap) 0; font-weight: 700; }
+    .panel { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: var(--radius); padding: var(--pad); margin-bottom: var(--gap); }
+    label { font-size: 13px; color: #bbb; display: block; margin-bottom: 6px; }
+    input[type="file"], select, button { background: #0f0f0f; color: #eee; border: 1px solid #2c2c2c; border-radius: 10px; padding: 10px 12px; }
+    button { cursor: pointer; }
+    button:hover { background: #151515; }
+    .row { display: grid; grid-template-columns: 1fr; gap: var(--gap); }
+    .row.two { grid-template-columns: 1fr 1fr; }
+    .controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--gap); align-items: end; }
+    .canvas-wrap { display: grid; grid-template-columns: 1fr; gap: var(--gap); }
+    canvas { background: #000; border: 1px solid #333; border-radius: 8px; image-rendering: pixelated; }
+    textarea { width: 100%; min-height: 200px; resize: vertical; background: #0f0f0f; color: #eee; border: 1px solid #2c2c2c; border-radius: 10px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; }
+    .flex { display: flex; gap: var(--gap); align-items: center; }
+    .muted { color: #9aa; font-size: 12px; }
+    .nowrap { white-space: nowrap; }
+    .spacer { flex: 1; }
+    .hint { font-size: 12px; color: #9aa; }
+    .badge { display: inline-block; padding: 2px 8px; border: 1px solid #333; border-radius: 999px; font-size: 12px; color: #ccc; }
+  </style>
+</head>
+<body>
+  <h1>SSD1306 Bitmap Converter</h1>
+  <div class="panel">
+    <div class="row two">
+      <div>
+        <label for="imgInput">Upload image (no resizing is applied)</label>
+        <input id="imgInput" type="file" accept="image/*" />
+      </div>
+      <div>
+        <label for="sizeSelect">OLED format (SSD1306)</label>
+        <select id="sizeSelect"></select>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:8px;">
+      Pixels with average RGB &gt; 127 → white (1). Otherwise black (0). Canvas is strictly the selected OLED size; oversized images will be clipped, smaller images are not scaled.
+    </div>
+  </div>
+
+  <div class="panel canvas-wrap">
+    <div class="flex">
+      <div class="badge" id="dimBadge">128×64</div>
+      <div class="spacer"></div>
+      <span class="muted" id="status">No image loaded.</span>
+    </div>
+    <canvas id="canvas" width="128" height="64"></canvas>
+    <div class="flex">
+      <button id="binarizeBtn" title="Re-apply B/W threshold to current canvas">Apply B/W Threshold</button>
+      <div class="spacer"></div>
+      <div class="flex">
+        <button id="convertBtn">Convert → Bytes</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="flex" style="margin-bottom:6px;">
+      <label class="nowrap" style="margin:0;">Output byte array</label>
+      <div class="spacer"></div>
+      <button id="copyBtn" title="Copy to clipboard">Copy</button>
+    </div>
+    <textarea id="output" spellcheck="false" placeholder="Click ‘Convert → Bytes’ to generate the array for Tiny4kOLED.h (oled.bitmap)."></textarea>
+    <div class="hint" style="margin-top:6px;">
+      Format: vertical bytes, LSB at (x, y) = (0, 0), MSB at (0, 7); next byte LSB at (1, 0)… page by page (8‑pixel high pages).
+    </div>
+  </div>
+
+  <script>
+    // Common SSD1306 formats (width × height). Heights are multiples of 8 (page height).
+    const COMMON_FORMATS = [
+      { w: 128, h: 64, label: "128×64 (default)" },
+      { w: 128, h: 32, label: "128×32" },
+      { w: 96,  h: 16, label: "96×16" },
+      { w: 64,  h: 48, label: "64×48" },
+      { w: 64,  h: 32, label: "64×32" },
+      { w: 24,  h: 24, label: "24×24" },
+      { w: 16,  h: 16, label: "16×16" }
+    ];
+
+    const imgInput = document.getElementById('imgInput');
+    const sizeSelect = document.getElementById('sizeSelect');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const output = document.getElementById('output');
+    const statusEl = document.getElementById('status');
+    const dimBadge = document.getElementById('dimBadge');
+
+    // Populate dropdown
+    function populateFormats() {
+      sizeSelect.innerHTML = '';
+      COMMON_FORMATS.forEach((f, idx) => {
+        const opt = document.createElement('option');
+        opt.value = `${f.w}x${f.h}`;
+        opt.textContent = f.label || `${f.w}×${f.h}`;
+        if (idx === 0) opt.selected = true;
+        sizeSelect.appendChild(opt);
+      });
+    }
+
+    function parseWH(v) {
+      const [w, h] = v.split('x').map(n => parseInt(n, 10));
+      return { w, h };
+    }
+
+    function resizeCanvas(w, h) {
+      // Set canvas dimensions and clear to black
+      canvas.width = w; canvas.height = h;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, w, h);
+      dimBadge.textContent = `${w}×${h}`;
+      statusEl.textContent = `Canvas resized to ${w}×${h}`;
+    }
+
+    function drawImageNoScale(img) {
+      // Draw at native size, clipped if larger than canvas
+      ctx.drawImage(img, 0, 0);
+      statusEl.textContent = `Image drawn at native size (${img.naturalWidth}×${img.naturalHeight}), no scaling.`;
+    }
+
+    function applyBWThreshold() {
+      const w = canvas.width, h = canvas.height;
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const avg = (r + g + b) / 3;
+        const v = (avg > 127) ? 255 : 0; // strictly higher than 127 → white
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255; // opaque
+      }
+      ctx.putImageData(imgData, 0, 0);
+      statusEl.textContent = 'Applied black & white threshold at 127.';
+    }
+
+    function pixelIsWhiteAt(x, y) {
+      if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return false;
+      const idx = (y * canvas.width + x) * 4;
+      const data = ctx.getImageData(x, y, 1, 1).data; // small read; accurate but slower
+      // Since we explicitly binarize, we can simply check one channel
+      return data[0] > 127; // 255 for white, 0 for black
+    }
+
+    // Optimized version: read all pixels once
+    function buildSSD1306Bitmap() {
+      const w = canvas.width, h = canvas.height;
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+      const bytes = [];
+
+      // SSD1306 page order: y in steps of 8 (pages), x across columns.
+      for (let pageY = 0; pageY < h; pageY += 8) {
+        for (let x = 0; x < w; x++) {
+          let byte = 0;
+          for (let bit = 0; bit < 8; bit++) {
+            const y = pageY + bit;
+            if (y >= h) break; // safety for non-multiples; not needed here
+            const idx = (y * w + x) * 4; // RGBA index
+            // Because we thresholded, r==g==b, so just read red
+            const isWhite = d[idx] > 127; // 255 white, 0 black
+            if (isWhite) {
+              // LSB at top (bit 0 == y offset 0)
+              byte |= (1 << bit);
+            }
+          }
+          bytes.push(byte);
+        }
+      }
+      return bytes;
+    }
+
+    function toHexLines(bytes, perLine = 16) {
+      const hex = bytes.map(b => '0x' + b.toString(16).padStart(2, '0'));
+      const lines = [];
+      for (let i = 0; i < hex.length; i += perLine) {
+        lines.push('  ' + hex.slice(i, i + perLine).join(', '));
+      }
+      return lines.join(',\n');
+    }
+
+    function generateOutput(bytes) {
+      const w = canvas.width, h = canvas.height;
+      const count = bytes.length;
+      const name = `bitmap_${w}x${h}`;
+      const header = `// SSD1306 bitmap for ${w}x${h} (pages of 8px, vertical bytes, LSB at y=0)\n// Total bytes: ${count}\n\n#include <Tiny4kOLED.h>\n\nconst uint8_t ${name}[] PROGMEM = {\n`;
+      const body = toHexLines(bytes);
+      const footer = `\n};\n\n// Example usage with Tiny4kOLED:\n// oled.bitmap(0, 0, ${w}, ${h}, ${name});\n`;
+      return header + body + footer;
+    }
+
+    // Events
+    sizeSelect.addEventListener('change', () => {
+      const { w, h } = parseWH(sizeSelect.value);
+      resizeCanvas(w, h);
+      output.value = '';
+    });
+
+    imgInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const img = new Image();
+      img.onload = () => {
+        // Clear to black, then draw image without scaling
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        drawImageNoScale(img);
+        applyBWThreshold();
+      };
+      img.onerror = () => {
+        statusEl.textContent = 'Failed to load image.';
+      };
+      const reader = new FileReader();
+      reader.onload = (ev) => { img.src = ev.target.result; };
+      reader.readAsDataURL(file);
+    });
+
+    document.getElementById('binarizeBtn').addEventListener('click', applyBWThreshold);
+
+    document.getElementById('convertBtn').addEventListener('click', () => {
+      const bytes = buildSSD1306Bitmap();
+      output.value = generateOutput(bytes);
+      statusEl.textContent = `Converted to ${bytes.length} bytes.`;
+    });
+
+    document.getElementById('copyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(output.value);
+        statusEl.textContent = 'Copied output to clipboard.';
+      } catch (e) {
+        statusEl.textContent = 'Copy failed. You can copy manually from the textbox.';
+      }
+    });
+
+    // Init
+    populateFormats();
+    const { w, h } = parseWH(sizeSelect.value || '128x64');
+    resizeCanvas(w, h);
+  </script>
+</body>
+</html>
