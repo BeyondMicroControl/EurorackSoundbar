@@ -61,3 +61,6 @@ This is our first step, planning how this soundbar will fit best fit behind your
 
 <a href="https://github.com/flyingzebra/EurorackSoundbar/blob/main/illustrations/Clavinova CLP 153S.png"><img src="/illustrations/ergonomy.png?raw=true" width=35% block></a>
 
+# Tools
+
+<a href=https://beyondmicrocontrol.github.io/EurorackSoundbar/index.html>TOOLS</a>
