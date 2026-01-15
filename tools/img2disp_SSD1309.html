@@ -193,7 +193,7 @@
       const name = `bitmap_${w}x${h}`;
       const header = `// SSD1306 bitmap for ${w}x${h} (pages of 8px, vertical bytes, LSB at y=0)\n// Total bytes: ${count}\n\n#include <Tiny4kOLED.h>\n\nconst uint8_t ${name}[] PROGMEM = {\n`;
       const body = toHexLines(bytes);
-      const footer = `\n};\n\n// Example usage with Tiny4kOLED:\n// oled.bitmap(0, 0, ${w}, ${h}, ${name});\n`;
+      const footer = `\n};\n\n// Example usage with Tiny4kOLED:\n// oled.bitmap(0, 0, ${w}, ${h>>3}, ${name});\n`;
       return header + body + footer;
     }
 
