@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>3-Point Interpolation as y=f(x): Exponential & Logarithmic (midpoint constrained)</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#111; --muted:#666; --grid:#ccc; --accent:#0a84ff; }
+  @media (prefers-color-scheme: dark){
+    :root { --bg:#111; --fg:#eee; --muted:#aaa; --grid:#2a2a2a; --accent:#55aaff; }
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  header{ padding:12px 16px; border-bottom:1px solid var(--grid); display:flex; gap:12px; align-items:center; flex-wrap:wrap;}
+  .badge{ background:color-mix(in lab, var(--accent) 20%, transparent);
+          border:1px solid color-mix(in lab, var(--accent) 40%, transparent);
+          padding:2px 8px; border-radius:999px; font-weight:600;}
+  .wrap{ display:grid; grid-template-columns:minmax(260px, 360px) 1fr; gap:12px; padding:12px 16px; }
+  .panel{ display:grid; gap:10px; border:1px solid var(--grid); border-radius:12px; padding:12px; }
+  .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted{ color:var(--muted); }
+  canvas{ width:100%; height:560px; border-radius:12px; background:var(--bg); box-shadow:0 2px 16px rgba(0,0,0,.15); }
+  code, pre{ background:rgba(127,127,127,.15); border-radius:8px; padding:.1rem .35rem; overflow:auto; }
+  .kv{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre-wrap; }
+  .err{ color:#e33; font-weight:600; }
+  label input{ margin-right:6px; }
+  .hint{ font-size:12px; }
+  .btn { padding:6px 10px; border:1px solid var(--grid); border-radius:8px; background:transparent; color:var(--fg); cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <span class="badge">3-Point Interpolation</span>
+  <span class="muted">Single-valued y=f(x). Middle point is horizontally centered between endpoints.</span>
+</header>
+
+<div class="wrap">
+  <!-- Controls / readout -->
+  <div class="panel">
+    <div class="row">
+      <label><input type="radio" name="model" value="exp" checked> Exponential &nbsp;<code>y = A·e^{B x} + C</code></label>
+    </div>
+    <div class="row">
+      <label><input type="radio" name="model" value="log"> Logarithmic &nbsp;<code>y = A·ln(x - s) + C</code></label>
+    </div>
+    <div class="hint muted">Drag P₀ (blue) and P₂ (red). Drag Pₘ (green) vertically; its x is locked at (x₀+x₂)/2. Shift+drag for finer steps.</div>
+    <hr />
+    <div class="kv" id="readout"></div>
+    <hr />
+    <div class="row">
+      <button class="btn" id="reset">Reset points</button>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div class="panel">
+    <canvas id="cv" width="1200" height="600"></canvas>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ===== Canvas & coordinate transforms =====
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+
+  function setupHiDPI() {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const cssW = cv.clientWidth, cssH = cv.clientHeight;
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  setupHiDPI(); addEventListener('resize', setupHiDPI);
+
+  // World rectangle
+  let world = { xmin:-5, xmax:5, ymin:-3.5, ymax:3.5 };
+  const W = () => ({ w: cv.clientWidth, h: cv.clientHeight });
+  const sx = x => (x - world.xmin)/(world.xmax - world.xmin)*W().w;
+  const sy = y => (1 - (y - world.ymin)/(world.ymax - world.ymin))*W().h;
+  const ix = X => world.xmin + X/W().w*(world.xmax - world.xmin);
+  const iy = Y => world.ymin + (1 - Y/W().h)*(world.ymax - world.ymin);
+
+  // ===== Points (P0, Pm, P2) =====
+  let P0 = { x:-3.5, y:-1.0 };
+  let P2 = { x: 3.5, y:-0.5 };
+  let Pm = { x:(P0.x+P2.x)/2, y: 2.0 };
+
+  // ===== Model selection =====
+  let model = 'exp';
+  for (const r of document.querySelectorAll('input[name=model]')) {
+    r.addEventListener('change', () => { model = r.value; render(); });
+  }
+  document.getElementById('reset').addEventListener('click', () => {
+    P0 = { x:-3.5, y:-1.0 };
+    P2 = { x: 3.5, y:-0.5 };
+    Pm = { x:(P0.x+P2.x)/2, y: 2.0 };
+    render();
+  });
+
+  // ===== Exponential interpolation =====
+  // y = A * exp(B x) + C
+  // With x_m midpoint, exact condition: (y_m - C)^2 = (y_0 - C)(y_2 - C)
+  function solveExponential(P0, Pm, P2) {
+    const a = P0.y, m = Pm.y, b = P2.y;
+    const denom = (a + b) - 2*m;
+    if (Math.abs(denom) < 1e-14) {
+      // If denom == 0 but ab == m^2, infinite solutions for C (degenerate); otherwise impossible.
+      if (Math.abs(a*b - m*m) < 1e-12) {
+        return { ok:false, err:"Exponential: underdetermined (a+b=2m and ab=m²); infinite C satisfy the constraint." };
+      }
+      return { ok:false, err:"Exponential: incompatible y-values (a+b=2m but ab≠m²)." };
+    }
+    const C = (a*b - m*m) / denom;
+    // Ensure we can form logs later (y_i - C must keep sign for B via ratio)
+    const y0c = a - C, y2c = b - C;
+    if (Math.abs(P2.x - P0.x) < 1e-12) return { ok:false, err:"Exponential: x₀ and x₂ must differ." };
+    if (y0c === 0 || y2c === 0) return { ok:false, err:"Exponential: yᵢ - C hit zero; cannot determine B." };
+    const B = Math.log(Math.abs(y2c / y0c)) / (P2.x - P0.x) * Math.sign(y2c / y0c); // keep sign
+    const A = (a - C) / Math.exp(B * P0.x);
+    return {
+      ok:true,
+      params:{ A, B, C },
+      fn:(x)=> A * Math.exp(B * x) + C,
+      text:`y(x) = ${fmt(A)} · e^{ ${fmt(B)} · x } + ${fmt(C)}`
+    };
+  }
+
+  // ===== Logarithmic interpolation =====
+  // y = A * ln(x - s) + C
+  // With x_m midpoint, define R = (x₂ - s)/(x₀ - s) > 0
+  // K = (y₂ - y₀)/(y_m - y₀) = ln R / ln((1+R)/2)  (monotone in R>0, K>1 required)
+  function solveLogarithmic(P0, Pm, P2) {
+    if (P2.x === P0.x) return { ok:false, err:"Logarithmic: x₀ and x₂ must differ." };
+    const xm = 0.5*(P0.x + P2.x);
+    const K = (Pm.y - P0.y) === 0 ? Infinity : (P2.y - P0.y) / (Pm.y - P0.y);
+
+    if (!(K > 1)) {
+      return { ok:false, err:"Logarithmic: requires (y₂ - y₀)/(yₘ - y₀) > 1. Adjust yₘ (green) between y₀ and y₂." };
+    }
+
+    // Solve g(R) = ln(R)/ln((1+R)/2) - K = 0 for R > 0.
+    function g(R) { return Math.log(R) / Math.log((1+R)/2) - K; }
+
+    // Bracket R. Behavior: g(R) -> +∞ as R->0+, g(1) ~ 2 - K, g(R)->1 - K as R->∞.
+    // Since K>1, there is a unique root R∈(0,∞). Root lies:
+    // - If K >= 2, R ∈ (0,1]; else R ∈ [1,∞).
+    let lo, hi;
+    if (K >= 2) { lo = 1e-8; hi = 1.0; }
+    else        { lo = 1.0;  hi = 1e8; }
+
+    let glo = g(lo), ghi = g(hi);
+    // Expand if needed to ensure bracketing
+    let expand = 0;
+    while (glo * ghi > 0 && expand < 60) {
+      if (K >= 2) { hi = Math.sqrt(hi); } else { hi = hi * 10; }
+      ghi = g(hi);
+      expand++;
+    }
+    if (glo * ghi > 0) {
+      return { ok:false, err:"Logarithmic: failed to bracket solution for R. Try different y-values." };
+    }
+
+    // Bisection
+    let R = NaN;
+    for (let i=0;i<80;i++){
+      const mid = Math.exp( (Math.log(lo) + Math.log(hi))/2 ); // bisection in log-space
+      const gm = g(mid);
+      if (Math.abs(gm) < 1e-12) { R = mid; break; }
+      if (glo * gm <= 0) { hi = mid; ghi = gm; } else { lo = mid; glo = gm; }
+      R = mid;
+    }
+
+    // Recover shift s from R = (x2 - s)/(x0 - s)
+    const s = (P2.x - R * P0.x) / (1 - R);
+    // Check domain: we need (x - s) > 0 (or < 0 consistently) on [x0,x2].
+    const side0 = P0.x - s, side2 = P2.x - s;
+    if (!(side0 * side2 > 0)) {
+      return { ok:false, err:"Logarithmic: singularity s falls inside [x₀,x₂]. Adjust points." };
+    }
+
+    // Get A from y1 - y0 = A ln((x1 - s)/(x0 - s))
+    const x1 = xm, y0 = P0.y, y1 = Pm.y;
+    const r1 = (x1 - s) / (P0.x - s);
+    if (r1 <= 0) return { ok:false, err:"Logarithmic: invalid r1 ≤ 0." };
+    const denom = Math.log(r1);
+    if (Math.abs(denom) < 1e-14) return { ok:false, err:"Logarithmic: ln((xₘ - s)/(x₀ - s)) ≈ 0; cannot solve A." };
+    const A = (y1 - y0) / denom;
+    const C = y0 - A * Math.log(P0.x - s);
+
+    return {
+      ok:true,
+      params:{ A, s, C, R, K },
+      fn:(x)=> A * Math.log(x - s) + C,
+      text:`y(x) = ${fmt(A)} · ln(x - ${fmt(s)}) + ${fmt(C)}`
+    };
+  }
+
+  // ===== Rendering =====
+  function drawGrid() {
+    const w = W().w, h = W().h;
+    ctx.clearRect(0,0,w,h);
+
+    // Grid
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(127,127,127,.25)';
+    const step = 0.5;
+    for (let x=Math.ceil(world.xmin/step)*step; x<=world.xmax+1e-9; x+=step){
+      const X = sx(x);
+      ctx.beginPath(); ctx.moveTo(X,0); ctx.lineTo(X,h); ctx.stroke();
+    }
+    for (let y=Math.ceil(world.ymin/step)*step; y<=world.ymax+1e-9; y+=step){
+      const Y = sy(y);
+      ctx.beginPath(); ctx.moveTo(0,Y); ctx.lineTo(w,Y); ctx.stroke();
+    }
+
+    // Axes
+    ctx.strokeStyle = 'rgba(0,0,0,.55)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(sx(world.xmin), sy(0)); ctx.lineTo(sx(world.xmax), sy(0)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx(0), sy(world.ymin)); ctx.lineTo(sx(0), sy(world.ymax)); ctx.stroke();
+  }
+
+  function drawFunction(fn, domain) {
+    if (!fn) return;
+    const samples = 800;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#0A84FF';
+    ctx.beginPath();
+    let drew = false;
+    for (let i=0;i<=samples;i++){
+      const x = domain.min + (domain.max - domain.min)*i/samples;
+      const y = fn(x);
+      if (!Number.isFinite(y)) { drew=false; continue; }
+      const X = sx(x), Y = sy(y);
+      if (!drew) { ctx.moveTo(X,Y); drew=true; } else { ctx.lineTo(X,Y); }
+    }
+    ctx.stroke();
+  }
+
+  function drawPoint(P, color, label, r=8) {
+    const X=sx(P.x), Y=sy(P.y);
+    ctx.fillStyle=color; ctx.strokeStyle='black'; ctx.lineWidth=1.25;
+    ctx.beginPath(); ctx.arc(X,Y,r,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.font='12px ui-monospace, monospace'; ctx.fillStyle=color;
+    ctx.fillText(label, X+10, Y-10);
+  }
+
+  // ===== Interaction =====
+  const DR = 12;
+  let dragging = null;
+
+  cv.addEventListener('pointerdown', e => {
+    const p = toWorld(e);
+    if (hit(p, P0)) dragging='P0';
+    else if (hit(p, {x:(P0.x+P2.x)/2, y:Pm.y})) dragging='Pm';
+    else if (hit(p, P2)) dragging='P2';
+    if (dragging) cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove', e => {
+    const p = toWorld(e);
+    const fine = e.shiftKey ? 0.05 : 0.25;
+    if (dragging==='P0'){ P0.x=snap(p.x,fine); P0.y=snap(p.y,fine); Pm.x=(P0.x+P2.x)/2; }
+    else if (dragging==='Pm'){ Pm.y=snap(p.y, e.shiftKey?0.05:0.1); Pm.x=(P0.x+P2.x)/2; }
+    else if (dragging==='P2'){ P2.x=snap(p.x,fine); P2.y=snap(p.y,fine); Pm.x=(P0.x+P2.x)/2; }
+    render(e);
+  });
+  cv.addEventListener('pointerup', e => { dragging=null; cv.releasePointerCapture(e.pointerId); });
+
+  function toWorld(e){
+    const r=cv.getBoundingClientRect();
+    return { x: ix(e.clientX - r.left), y: iy(e.clientY - r.top) };
+  }
+  function hit(p,q){
+    const dx = sx(p.x)-sx(q.x), dy = sy(p.y)-sy(q.y);
+    return Math.hypot(dx,dy) <= DR+2;
+  }
+  function snap(v,step){ return Math.round(v/step)*step; }
+
+  // ===== Readout / hover =====
+  const readout = document.getElementById('readout');
+  cv.addEventListener('mousemove', e => render(e));
+  cv.addEventListener('mouseleave', () => render(null));
+
+  function render(moveEvent=null){
+    drawGrid();
+
+    const xm = (P0.x+P2.x)/2;
+    Pm.x = xm; // enforce midpoint
+
+    // Solve selected model
+    let sol, domain;
+    if (model === 'exp') {
+      sol = solveExponential(P0,Pm,P2);
+      domain = { min: Math.min(P0.x,P2.x), max: Math.max(P0.x,P2.x) };
+    } else {
+      sol = solveLogarithmic(P0,Pm,P2);
+      // domain excludes singularity s; but solveLog ensures s is outside [x0,x2]
+      domain = { min: Math.min(P0.x,P2.x), max: Math.max(P0.x,P2.x) };
+    }
+
+    // Draw function if valid
+    if (sol.ok) drawFunction(sol.fn, domain);
+
+    // Draw points
+    drawPoint(P0, '#1f77b4', 'P₀');
+    drawPoint({x:xm, y:Pm.y}, '#2ca02c', 'Pₘ');
+    drawPoint(P2, '#d62728', 'P₂');
+
+    // Hover probe
+    let hoverText = '';
+    if (moveEvent && sol.ok) {
+      const rect = cv.getBoundingClientRect();
+      const X = moveEvent.clientX - rect.left;
+      const xw = ix(X);
+      if (xw >= domain.min - 1e-9 && xw <= domain.max + 1e-9){
+        const y = sol.fn(xw);
+        if (Number.isFinite(y)) {
+          ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(sx(xw), sy(y), 3.5, 0, Math.PI*2); ctx.fill();
+          hoverText = `\n  f(${fmt(xw)}) = ${fmt(y)}`;
+        }
+      }
+    }
+
+    // Readout text
+    const base =
+`Points
+  P₀ = (${fmt(P0.x)}, ${fmt(P0.y)})
+  Pₘ = (${fmt(xm)}, ${fmt(Pm.y)})   [x-midpoint enforced]
+  P₂ = (${fmt(P2.x)}, ${fmt(P2.y)})
+
+Model: ${model==='exp' ? 'Exponential  y = A·e^{B x} + C' : 'Logarithmic  y = A·ln(x - s) + C'}
+${sol.ok ? (
+`Function:
+  ${sol.text}
+
+Domain:
+  x ∈ [${fmt(domain.min)}, ${fmt(domain.max)}]  (single-valued y=f(x))${hoverText}
+
+Parameters:
+  ${Object.entries(sol.params).map(([k,v])=>`${k} = ${fmt(v)}`).join('\n  ')}`
+) : `\n⚠️  ${sol.err}`}`;
+
+    readout.textContent = base;
+  }
+
+  function fmt(v){
+    if (!Number.isFinite(v)) return 'NaN';
+    const a = Math.abs(v);
+    if (a>=1e5 || (a>0 && a<1e-4)) return v.toExponential(6);
+    return v.toFixed(6);
+  }
+
+  // Initial render
+  render();
+})();
+</script>
+</body>
+</html>

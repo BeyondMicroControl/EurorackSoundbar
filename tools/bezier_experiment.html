@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Quadratic Bézier as y = f(x) through 3 points (midpoint constrained)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  header, footer { padding: 12px 16px; }
+  header { border-bottom: 1px solid #ccc; }
+  footer { border-top: 1px solid #ccc; font-size: 14px; }
+  .wrap { display: grid; gap: 12px; padding: 12px 16px; }
+  .panel { display: grid; gap: 6px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  code, pre { background: color-mix(in lab, Canvas 92%, black 8%); padding: 2px 6px; border-radius: 6px; }
+  canvas { width: 100%; max-width: 1100px; height: 520px; border-radius: 10px; box-shadow: 0 2px 16px color-mix(in lab, #000 15%, transparent); background: #fff; }
+  .hint { opacity: 0.8; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: color-mix(in lab, #09f 20%, transparent); border: 1px solid color-mix(in lab, #09f 40%, transparent); }
+  .values { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
+  @media (prefers-color-scheme: dark) {
+    canvas { background: #111; }
+    header, footer { border-color: #333; }
+    code, pre { background: #222; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <strong>Quadratic Bézier as a Function</strong>
+    <span class="hint">– passes (P₀, Pₘ, P₂) with xₘ fixed at horizontal midpoint</span>
+  </header>
+
+  <div class="wrap">
+    <div class="panel">
+      <div class="row">
+        <span class="badge">Drag the points:</span>
+        <span>P₀ (blue) and P₂ (red) are fully draggable.</span>
+        <span>Pₘ (green) is constrained to x = (x₀ + x₂)/2 (vertical drag only).</span>
+      </div>
+      <canvas id="cv" width="1200" height="600"></canvas>
+      <div class="values" id="readout"></div>
+    </div>
+  </div>
+
+  <footer class="hint">
+    Tip: Hover the canvas to see f(x) at the cursor’s x. Shift+drag for fine adjustments.
+  </footer>
+
+<script>
+(() => {
+  // ----------- Canvas setup with HiDPI support -----------
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  function setupHiDPI() {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const cssW = cv.clientWidth;
+    const cssH = cv.clientHeight;
+    cv.width  = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  setupHiDPI();
+  window.addEventListener('resize', setupHiDPI);
+
+  // ----------- World <-> Screen coordinates -----------
+  // World space: a fixed convenient range; you can pan/zoom if you want.
+  let world = { xmin: -5, xmax: 5, ymin: -3.5, ymax: 3.5 };
+  function sx(x) { const w = cv.clientWidth;  return (x - world.xmin) / (world.xmax - world.xmin) * w; }
+  function sy(y) { const h = cv.clientHeight; return (1 - (y - world.ymin) / (world.ymax - world.ymin)) * h; }
+  function ix(X) { const w = cv.clientWidth;  return world.xmin + (X / w) * (world.xmax - world.xmin); }
+  function iy(Y) { const h = cv.clientHeight; return world.ymin + (1 - Y / h) * (world.ymax - world.ymin); }
+
+  // ----------- Initial points -----------
+  let P0 = { x: -3.5, y: -1.0 };
+  let P2 = { x:  3.5, y: -0.5 };
+  let Pm = { x: (P0.x + P2.x)/2, y:  2.0 };
+
+  // Derived control point (C1) for the quadratic Bézier
+  function computeC1() {
+    // Enforce x-control at midpoint to keep x(t) linear (monotone).
+    const C1x = (P0.x + P2.x) / 2;
+    // From y(0.5) constraint: y(0.5) = 0.25*y0 + 0.5*C1y + 0.25*y2 = y_m
+    const C1y = 2*Pm.y - 0.5*(P0.y + P2.y);
+    return { x: C1x, y: C1y };
+  }
+
+  // Evaluate Bézier at parameter t in [0,1]
+  function bezierEval(t) 
+  {
+    // x = (1-t)²*P0x + 2(1-t)t*C1x + t²*P2x
+    // y = (1-t)²*P0y + 2(1-t)t*C1y + t²*P2y
+
+    const C1 = computeC1();
+    const omt = 1 - t;
+    const bx = omt*omt*P0.x + 2*omt*t*C1.x + t*t*P2.x;
+    const by = omt*omt*P0.y + 2*omt*t*C1.y + t*t*P2.y;
+    return {x: bx, y: by};
+  }
+
+  // Since x(t) is linear: x(t) = x0 + t*(x2 - x0)  =>  t(x) = (x - x0)/(x2 - x0)
+  function yOfX(x) {
+    const dx = (P2.x - P0.x);
+    if (Math.abs(dx) < 1e-9) return NaN; // vertical segment is not allowed for a function
+    const t = (x - P0.x) / dx;
+    // Clamp into the domain [0,1] to stay on the segment
+    const tt = Math.min(1, Math.max(0, t));
+    return bezierEval(tt).y;
+  }
+
+  // Expand to polynomial y(x) = a x^2 + b x + c (useful for exact values)
+  function polynomialABC() 
+  {
+    const C1 = computeC1();
+    const x0 = P0.x, x2 = P2.x, y0 = P0.y, y2 = P2.y, c1y = C1.y;
+    const dx = x2 - x0;
+    if (Math.abs(dx) < 1e-12) return {a: NaN, b: NaN, c: NaN};
+    // y(x) = (1-t)^2*y0 + 2(1-t)t*c1y + t^2*y2, with t=(x-x0)/dx
+    // Expand: y = y0 + (2c1y - 2y0)*(t) + (y0 - 2c1y + y2)*(t^2)
+    const A = (y0 - 2*c1y + y2) / (dx*dx);
+    const B = (2*c1y - 2*y0) / dx - 2*A*x0;
+    const C = y0 - B*x0 - A*x0*x0;
+    return { a: A, b: B, c: C };
+  }
+
+  // ----------- Drawing helpers -----------
+  function drawGrid() {
+    const w = cv.clientWidth, h = cv.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    // Grid
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+    const step = 0.5;
+    for (let x = Math.ceil(world.xmin/step)*step; x <= world.xmax; x += step) {
+      const X = sx(x);
+      ctx.beginPath(); ctx.moveTo(X, 0); ctx.lineTo(X, h); ctx.stroke();
+    }
+    for (let y = Math.ceil(world.ymin/step)*step; y <= world.ymax; y += step) {
+      const Y = sy(y);
+      ctx.beginPath(); ctx.moveTo(0, Y); ctx.lineTo(w, Y); ctx.stroke();
+    }
+
+    // Axes
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 1.5;
+    // x-axis
+    const X0 = sx(world.xmin), X1 = sx(world.xmax), Y0 = sy(0);
+    ctx.beginPath(); ctx.moveTo(X0, Y0); ctx.lineTo(X1, Y0); ctx.stroke();
+    // y-axis
+    const Yt = sy(world.ymax), Yb = sy(world.ymin), Xy = sx(0);
+    ctx.beginPath(); ctx.moveTo(Xy, Yt); ctx.lineTo(Xy, Yb); ctx.stroke();
+  }
+
+  function drawBezier() 
+  {
+    const C1 = computeC1();
+
+    // Curve (sample via t; x is monotone so this is y=f(x))
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#0A84FF';
+    ctx.beginPath();
+    const S = 400; // samples
+    for (let i=0;i<=S;i++)
+    {
+      const t = i / S;
+      const p = bezierEval(t);
+      const X = sx(p.x), Y = sy(p.y);
+      if (i===0) ctx.moveTo(X,Y); else ctx.lineTo(X,Y);
+    }
+    ctx.stroke();
+
+    // Control polygon (for reference)
+    ctx.setLineDash([6,6]); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(200,100,0,0.8)';
+    ctx.beginPath();
+    ctx.moveTo(sx(P0.x), sy(P0.y));
+    ctx.lineTo(sx(C1.x), sy(C1.y));
+    ctx.lineTo(sx(P2.x), sy(P2.y));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Draw points
+    drawPoint(P0, '#1f77b4', 'P₀');
+    drawPoint({x: (P0.x+P2.x)/2, y: Pm.y }, '#2ca02c', 'Pₘ'); // enforce x-mid
+    drawPoint(P2, '#d62728', 'P₂');
+    drawPoint(C1, '#ff7f0e', 'C₁', 4); // small marker for control point
+  }
+
+  function drawPoint(P, color, label, r=8) 
+  {
+    const X = sx(P.x), Y = sy(P.y);
+    ctx.fillStyle = color; ctx.strokeStyle = 'black'; ctx.lineWidth = 1.25;
+    ctx.beginPath(); ctx.arc(X, Y, r, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.font = '12px ui-monospace, monospace';
+    ctx.fillStyle = color;
+    ctx.fillText(label, X + 10, Y - 10);
+  }
+
+  // ----------- Interaction (dragging) -----------
+  const DRAG_RADIUS = 12;
+  let dragTarget = null;
+  let dragOffset = {x:0, y:0};
+  cv.addEventListener('pointerdown', (e) => {
+    const p = pointerWorld(e);
+    // hit test order: P0, Pm (vert only), P2
+    if (hit(p, P0)) dragTarget = 'P0';
+    else if (hit(p, {x:(P0.x+P2.x)/2, y:Pm.y})) dragTarget = 'Pm';
+    else if (hit(p, P2)) dragTarget = 'P2';
+    if (dragTarget) cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove', (e) => {
+    const p = pointerWorld(e);
+    const fine = e.shiftKey ? 0.05 : 0.25; // fine control with Shift
+    if (dragTarget === 'P0') {
+      P0.x = snap(p.x, fine); P0.y = snap(p.y, fine);
+      // Keep Pm.x synced to midpoint
+      Pm.x = (P0.x + P2.x)/2;
+    } else if (dragTarget === 'Pm') {
+      Pm.y = snap(p.y, (e.shiftKey ? 0.05 : 0.1));
+      Pm.x = (P0.x + P2.x)/2; // constrain horizontally
+    } else if (dragTarget === 'P2') {
+      P2.x = snap(p.x, fine); P2.y = snap(p.y, fine);
+      Pm.x = (P0.x + P2.x)/2;
+    }
+    render(e);
+  });
+  cv.addEventListener('pointerup', (e) => { dragTarget = null; cv.releasePointerCapture(e.pointerId); });
+
+  function pointerWorld(e) {
+    const rect = cv.getBoundingClientRect();
+    const X = e.clientX - rect.left, Y = e.clientY - rect.top;
+    return { x: ix(X), y: iy(Y) };
+  }
+  function hit(p, q) {
+    const dx = sx(p.x) - sx(q.x);
+    const dy = sy(p.y) - sy(q.y);
+    return Math.hypot(dx, dy) <= DRAG_RADIUS + 2;
+  }
+  function snap(v, step) {
+    return Math.round(v/step)*step;
+  }
+
+  // ----------- Readout and hover sampling -----------
+  const readout = document.getElementById('readout');
+  cv.addEventListener('mousemove', (e) => render(e));
+  cv.addEventListener('mouseleave', () => render(null));
+
+  function render(moveEvent) {
+    drawGrid();
+    drawBezier();
+    const C1 = computeC1();
+    const poly = polynomialABC();
+    const domainOK = Math.abs(P2.x - P0.x) >= 1e-9;
+
+    // Hover probe
+    let hoverText = '';
+    if (moveEvent && domainOK) {
+      const rect = cv.getBoundingClientRect();
+      const X = moveEvent.clientX - rect.left;
+      const xw = ix(X);
+      if (xw >= Math.min(P0.x, P2.x) - 1e-9 && xw <= Math.max(P0.x, P2.x) + 1e-9) {
+        const y = yOfX(xw);
+        // Marker
+        ctx.fillStyle = '#111';
+        ctx.beginPath(); ctx.arc(sx(xw), sy(y), 3.5, 0, Math.PI*2); ctx.fill();
+        hoverText = `  f(${fmt(xw)}) = ${fmt(y)}`;
+      }
+    }
+
+    // Compose readout
+    const midx = (P0.x + P2.x)/2;
+    readout.textContent =
+`Points
+  P₀ = (${fmt(P0.x)}, ${fmt(P0.y)})
+  Pₘ = (${fmt(midx)}, ${fmt(Pm.y)})   [x-midpoint enforced]
+  P₂ = (${fmt(P2.x)}, ${fmt(P2.y)})
+
+Control point C₁
+  C₁ = ( ${(fmt((P0.x+P2.x)/2))}, ${fmt(C1.y)} )
+  with   C₁ᵧ = 2*yₘ - 0.5*(y₀ + y₂)  and  C₁ₓ = (x₀ + x₂)/2
+
+Function form (domain x ∈ [${fmt(Math.min(P0.x,P2.x))}, ${fmt(Math.max(P0.x,P2.x))}])
+  t(x) = (x - x₀) / (x₂ - x₀)                 (monotone)
+  y(x) = (1 - t)²*y₀ + 2(1 - t)t*C₁ᵧ + t²*y₂  (quadratic)
+
+Polynomial (expanded):   y(x) = a x² + b x + c
+  a = ${fmt(poly.a)}   b = ${fmt(poly.b)}   c = ${fmt(poly.c)}
+${hoverText}`;
+  }
+
+  function fmt(v) {
+    if (!isFinite(v)) return 'NaN';
+    const av = Math.abs(v);
+    if (av >= 1e4 || (av > 0 && av < 1e-3)) return v.toExponential(4);
+    return v.toFixed(4);
+  }
+
+  // Initial render
+  render(null);
+})();
+</script>
+</body>
+</html>
